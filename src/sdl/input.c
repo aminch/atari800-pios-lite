@@ -1977,6 +1977,17 @@ static void Init_SDL_Joysticks(void)
 {
 	int i;
 
+	/* Heuristic: treat certain named devices as non-game (keyboard/system control) so they are not mapped. */
+	/* Kept local (not static at file scope) to minimize global namespace impact. */
+	#define IS_NON_GAME_NAME(nm) ( \
+		(nm) && ( \
+		 strstr((nm), "Keyboard") || \
+		 strstr((nm), "System Control") || \
+		 strstr((nm), "Consumer Control") || \
+		 strstr((nm), "Mouse") || \
+		 strstr((nm), "Touchpad") || strstr((nm), "Touch Pad") || \
+		 strstr((nm), "Power Button") ) )
+
 #if SDL2
 	if (SDL_InitSubSystem(SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER) != 0) {
 #else
@@ -1998,10 +2009,32 @@ static void Init_SDL_Joysticks(void)
 	if (n_host_joys > MAX_HOST_JOYSTICKS)
 		n_host_joys = MAX_HOST_JOYSTICKS;
 	for (i = 0; i < n_host_joys; i++) {
+		/* Pre-open name filter (SDL2 only) */
+#if SDL2
+		{
+			const char *pre = SDL_JoystickNameForIndex(i);
+			if (IS_NON_GAME_NAME(pre)) {
+				Log_print("Skipping non-game input device %d (%s)", i, pre ? pre : "unknown");
+				continue;
+			}
+		}
+#endif		
 		host_joys[i] = SDL_JoystickOpen(i);
 		if (host_joys[i] == NULL) {
 			Log_print("Joystick %i not found", i);
 		} else {
+			/* Post-open minimal capability filter: ignore devices with 0 axes and <=1 button. */
+			{
+				int axes = SDL_JoystickNumAxes(host_joys[i]);
+				int btns = SDL_JoystickNumButtons(host_joys[i]);
+				if (axes == 0 && btns <= 1) {
+					const char *nm = SDL_JoystickName(host_joys[i]);
+					Log_print("Ignoring pseudo joystick %d (%s) axes=%d buttons=%d", i, nm ? nm : "unknown", axes, btns);
+					SDL_JoystickClose(host_joys[i]);
+					host_joys[i] = NULL;
+					continue;
+				}
+			}
 			Log_print("Joystick %i: %s", i,
 #if SDL2
 				SDL_JoystickName(host_joys[i]));
