@@ -737,6 +737,7 @@ static int SetVideoMode(int w, int h, int windowed)
 		}
 #endif /* SDL2 */
 
+		SDL_GL_ResetAttributes(); /* without this the Create Context call fails on PiOS Lite */
 		SDL_GLContext ctx = SDL_GL_CreateContext(SDL_VIDEO_wnd);
 		if (!ctx) {
 			Log_print("OpenGL context could not be created: %s", SDL_GetError());
