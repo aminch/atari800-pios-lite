@@ -679,6 +679,64 @@ static int SetVideoMode(int w, int h, int windowed)
 			exit(-1);
 		}
 
+#if SDL2
+		/* Optional detailed probing of supported GL / GLES context versions. Enable by setting A800_GL_PROBE=1 */
+		const char *probe_env = getenv("A800_GL_PROBE");
+		if (probe_env && probe_env[0] != '\0' && probe_env[0] != '0') {
+			Log_print("Beginning OpenGL context version probe (A800_GL_PROBE=%s)", probe_env);
+			struct ProbeEntry { const char *name; int profile; int major; int minor; };
+			/* Order: try newer first. */
+			static const struct ProbeEntry probes[] = {
+				/* Core */
+				{"core", SDL_GL_CONTEXT_PROFILE_CORE, 4,6}, {"core", SDL_GL_CONTEXT_PROFILE_CORE, 4,5}, {"core", SDL_GL_CONTEXT_PROFILE_CORE, 4,4},
+				{"core", SDL_GL_CONTEXT_PROFILE_CORE, 4,3}, {"core", SDL_GL_CONTEXT_PROFILE_CORE, 4,2}, {"core", SDL_GL_CONTEXT_PROFILE_CORE, 4,1},
+				{"core", SDL_GL_CONTEXT_PROFILE_CORE, 4,0}, {"core", SDL_GL_CONTEXT_PROFILE_CORE, 3,3}, {"core", SDL_GL_CONTEXT_PROFILE_CORE, 3,2},
+				{"core", SDL_GL_CONTEXT_PROFILE_CORE, 3,1}, {"core", SDL_GL_CONTEXT_PROFILE_CORE, 3,0},
+				/* Compatibility */
+				{"compat", SDL_GL_CONTEXT_PROFILE_COMPATIBILITY, 4,6}, {"compat", SDL_GL_CONTEXT_PROFILE_COMPATIBILITY, 4,5},
+				{"compat", SDL_GL_CONTEXT_PROFILE_COMPATIBILITY, 4,4}, {"compat", SDL_GL_CONTEXT_PROFILE_COMPATIBILITY, 4,3},
+				{"compat", SDL_GL_CONTEXT_PROFILE_COMPATIBILITY, 4,2}, {"compat", SDL_GL_CONTEXT_PROFILE_COMPATIBILITY, 4,1},
+				{"compat", SDL_GL_CONTEXT_PROFILE_COMPATIBILITY, 4,0}, {"compat", SDL_GL_CONTEXT_PROFILE_COMPATIBILITY, 3,3},
+				{"compat", SDL_GL_CONTEXT_PROFILE_COMPATIBILITY, 3,2}, {"compat", SDL_GL_CONTEXT_PROFILE_COMPATIBILITY, 3,1},
+				{"compat", SDL_GL_CONTEXT_PROFILE_COMPATIBILITY, 3,0}, {"compat", SDL_GL_CONTEXT_PROFILE_COMPATIBILITY, 2,1},
+				/* GLES */
+				{"es", SDL_GL_CONTEXT_PROFILE_ES, 3,2}, {"es", SDL_GL_CONTEXT_PROFILE_ES, 3,1}, {"es", SDL_GL_CONTEXT_PROFILE_ES, 3,0},
+				{"es", SDL_GL_CONTEXT_PROFILE_ES, 2,0},
+			};
+			for (size_t pi = 0; pi < sizeof(probes)/sizeof(probes[0]); ++pi) {
+				SDL_GL_ResetAttributes();
+				SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, probes[pi].profile);
+				SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, probes[pi].major);
+				SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, probes[pi].minor);
+				SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, 0);
+				SDL_ClearError();
+				SDL_GLContext test_ctx = SDL_GL_CreateContext(SDL_VIDEO_wnd);
+				if (test_ctx) {
+					/* Fetch glGetString dynamically to avoid linking against libGL at build time. */
+					typedef const GLubyte* (APIENTRY * PFNGLGETSTRINGPROC)(GLenum);
+					PFNGLGETSTRINGPROC p_glGetString = (PFNGLGETSTRINGPROC)SDL_GL_GetProcAddress("glGetString");
+					const char *ver = NULL, *vendor = NULL, *renderer = NULL, *sl = NULL;
+					if (p_glGetString) {
+						ver = (const char*)p_glGetString(GL_VERSION);
+						vendor = (const char*)p_glGetString(GL_VENDOR);
+						renderer = (const char*)p_glGetString(GL_RENDERER);
+						sl = (const char*)p_glGetString(GL_SHADING_LANGUAGE_VERSION);
+					} else {
+						Log_print("GL probe warning: glGetString not available for context profile=%s %d.%d", probes[pi].name, probes[pi].major, probes[pi].minor);
+					}
+					Log_print("GL probe success: profile=%s requested=%d.%d -> version='%s' vendor='%s' renderer='%s' GLSL='%s'", probes[pi].name, probes[pi].major, probes[pi].minor,
+					          ver ? ver : "?", vendor ? vendor : "?", renderer ? renderer : "?", sl ? sl : "?");
+					SDL_GL_DeleteContext(test_ctx);
+				} else {
+					const char *err = SDL_GetError();
+					Log_print("GL probe fail: profile=%s requested=%d.%d error=%s", probes[pi].name, probes[pi].major, probes[pi].minor, err && *err ? err : "(none)");
+				}
+			}
+			SDL_GL_ResetAttributes(); /* restore defaults before real context */
+			Log_print("OpenGL probing complete.");
+		}
+#endif /* SDL2 */
+
 		SDL_GLContext ctx = SDL_GL_CreateContext(SDL_VIDEO_wnd);
 		if (!ctx) {
 			Log_print("OpenGL context could not be created: %s", SDL_GetError());
