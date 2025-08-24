@@ -714,7 +714,14 @@ static int SetVideoMode(int w, int h, int windowed)
 				if (test_ctx) {
 					/* Fetch glGetString dynamically to avoid linking against libGL at build time. */
 					typedef const GLubyte* (APIENTRY * PFNGLGETSTRINGPROC)(GLenum);
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+#endif
 					PFNGLGETSTRINGPROC p_glGetString = (PFNGLGETSTRINGPROC)SDL_GL_GetProcAddress("glGetString");
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
 					const char *ver = NULL, *vendor = NULL, *renderer = NULL, *sl = NULL;
 					if (p_glGetString) {
 						ver = (const char*)p_glGetString(GL_VERSION);
@@ -815,6 +822,15 @@ static GLint sh_vp_matrix;
 static GLint sh_resolution;
 static GLint sh_pixelSpread;
 static GLint sh_glow;
+
+/* Runtime flag: if set via -skip-410, bypass attempting GLSL 410 shaders and go straight to 140. */
+static int g_skip_glsl_410 = 0;
+static int g_using_glsl_140 = 0;
+int is_using_glsl_140(void);
+
+int is_using_glsl_140(void) { 
+	return g_using_glsl_140; 
+}
 
 #define	TEX_WIDTH	1024
 #define	TEX_HEIGHT	512
@@ -975,65 +991,143 @@ int SDL_VIDEO_GL_SetVideoMode(VIDEOMODE_resolution_t const *res, int windowed, V
 #if SDL2
 			// add shaders
 #ifdef DEBUG_SHADERS
-			GLchar* vertexShader = read_text_file("atari800-shader.vert");
-			if (!vertexShader) {
-				Log_print("Missing vertex shader file 'atari800-shader.vert'");
-				exit(1);
-			}
-			GLchar* fragmentShader = read_text_file("atari800-shader.frag");
-			if (!fragmentShader) {
-				Log_print("Missing fragment shader file 'atari800-shader.frag'");
-				exit(1);
+			GLchar* vertexShader = NULL;
+			GLchar* fragmentShader = NULL;
+			if (!g_skip_glsl_410) {
+				vertexShader = read_text_file("atari800-shader.vert");
+				if (!vertexShader) {
+					Log_print("Missing vertex shader file 'atari800-shader.vert'");
+					exit(1);
+				}
+				fragmentShader = read_text_file("atari800-shader.frag");
+				if (!fragmentShader) {
+					Log_print("Missing fragment shader file 'atari800-shader.frag'");
+					exit(1);
+				}
 			}
 #else
 #include "sdl/gen-atari800-shader.vert.h"
 			GLchar* vertexShader = Util_malloc(vertexShaderArr_len + 1);
-			strncpy(vertexShader, (char*)vertexShaderArr, vertexShaderArr_len);
-			vertexShader[vertexShaderArr_len] = 0;
+			memcpy(vertexShader, vertexShaderArr, vertexShaderArr_len);
+			vertexShader[vertexShaderArr_len] = '\0';
 #include "sdl/gen-atari800-shader.frag.h"
 			GLchar* fragmentShader = Util_malloc(fragmentShaderArr_len + 1);
-			strncpy(fragmentShader, (char*)fragmentShaderArr, fragmentShaderArr_len);
-			fragmentShader[fragmentShaderArr_len] = 0;
+			memcpy(fragmentShader, fragmentShaderArr, fragmentShaderArr_len);
+			fragmentShader[fragmentShaderArr_len] = '\0';
 #endif
 			GLint success = 0;
 
-			int vertex = gl.CreateShader(GL_VERTEX_SHADER);
-			gl.ShaderSource(vertex, 1, &vertexShader, NULL);
-			gl.CompileShader(vertex);
-			gl.GetShaderiv(vertex, GL_COMPILE_STATUS, &success);
-			if (!success) {
-				char buf[500];
-				gl.GetShaderInfoLog(vertex, 500, NULL, buf);
-				Log_print("Cannot use OpenGL - error compiling vertex shader: %s", buf);
-				exit(1);
-			}
-			int fragment = gl.CreateShader(GL_FRAGMENT_SHADER);
-			gl.ShaderSource(fragment, 1, &fragmentShader, NULL);
-			gl.CompileShader(fragment);
-			gl.GetShaderiv(fragment, GL_COMPILE_STATUS, &success);
-			if (!success) {
-				char buf[500];
-				gl.GetShaderInfoLog(fragment, 500, NULL, buf);
-				Log_print("Cannot use OpenGL - error compiling fragment shader: %s", buf);
-				exit(1);
+			/* Try GLSL 410 unless skipped; fall back to 140 on failure or skip. */
+			GLuint vertex = 0, fragment = 0;
+			GLint ok = 0;
+			if (!g_skip_glsl_410) {
+				vertex = gl.CreateShader(GL_VERTEX_SHADER);
+				GLchar *vsrc_ptr = vertexShader;
+				gl.ShaderSource(vertex, 1, &vsrc_ptr, NULL);
+				gl.CompileShader(vertex);
+				gl.GetShaderiv(vertex, GL_COMPILE_STATUS, &ok);
+				if (!ok) {
+					char logbuf[512]; gl.GetShaderInfoLog(vertex, (GLsizei)sizeof(logbuf), NULL, logbuf);
+					Log_print("GLSL 410 vertex compile failed: %s -- falling back to 140", logbuf);
+				}
+				if (ok) {
+					fragment = gl.CreateShader(GL_FRAGMENT_SHADER);
+					GLchar *fsrc_ptr = fragmentShader;
+					gl.ShaderSource(fragment, 1, &fsrc_ptr, NULL);
+					gl.CompileShader(fragment);
+					gl.GetShaderiv(fragment, GL_COMPILE_STATUS, &ok);
+					if (!ok) {
+						char logbuf[512]; gl.GetShaderInfoLog(fragment, (GLsizei)sizeof(logbuf), NULL, logbuf);
+						Log_print("GLSL 410 fragment compile failed: %s -- falling back to 140", logbuf);
+					}
+				}
+				if (ok) {
+					progID = gl.CreateProgram();
+					gl.AttachShader(progID, vertex);
+					gl.AttachShader(progID, fragment);
+					gl.LinkProgram(progID);
+					gl.GetProgramiv(progID, GL_LINK_STATUS, &success);
+					if (!success) {
+						char buf[500]; gl.GetProgramInfoLog(progID, 500, NULL, buf);
+						Log_print("GLSL 410 link failed: %s -- falling back to 140", buf);
+						ok = 0;
+					}
+				}
 			}
 
-			progID = gl.CreateProgram();
-			gl.AttachShader(progID, vertex);
-			gl.AttachShader(progID, fragment);
-			gl.LinkProgram(progID);
-			gl.GetProgramiv(progID, GL_LINK_STATUS, &success);
-			if (!success) {
-				char buf[500];
-				gl.GetProgramInfoLog(progID, 500, NULL, buf);
-				Log_print("Cannot use OpenGL - error linking shader program: %s", buf);
-				exit(1);
+			if (g_skip_glsl_410 || !ok) {
+				/* Clean up any partially created 410 shaders */
+				if (vertex) { gl.DeleteShader(vertex); vertex = 0; }
+				if (fragment) { gl.DeleteShader(fragment); fragment = 0; }
+				/* free original 410 sources so we can load 140 */
+				free(vertexShader); vertexShader = NULL;
+				free(fragmentShader); fragmentShader = NULL;
+
+				/* Load and compile fallback GLSL 140 shaders */
+#ifdef DEBUG_SHADERS
+				vertexShader = read_text_file("atari800-shader.140.vert");
+				if (!vertexShader) { Log_print("Missing fallback vertex shader file 'atari800-shader.140.vert'"); exit(1); }
+				fragmentShader = read_text_file("atari800-shader.140.frag");
+				if (!fragmentShader) { Log_print("Missing fallback fragment shader file 'atari800-shader.140.frag'"); exit(1); }
+#else
+#include "sdl/gen-atari800-shader.140.vert.h"
+				vertexShader = Util_malloc(vertexShader140Arr_len + 1);
+				memcpy(vertexShader, vertexShader140Arr, vertexShader140Arr_len);
+				vertexShader[vertexShader140Arr_len] = '\0';
+#include "sdl/gen-atari800-shader.140.frag.h"
+				fragmentShader = Util_malloc(fragmentShader140Arr_len + 1);
+				memcpy(fragmentShader, fragmentShader140Arr, fragmentShader140Arr_len);
+				fragmentShader[fragmentShader140Arr_len] = '\0';
+#endif
+				vertex = gl.CreateShader(GL_VERTEX_SHADER);
+				GLchar *vsrc_ptr = vertexShader;
+				gl.ShaderSource(vertex, 1, &vsrc_ptr, NULL);
+				gl.CompileShader(vertex);
+				gl.GetShaderiv(vertex, GL_COMPILE_STATUS, &ok);
+				if (!ok) {
+					char logbuf[512]; gl.GetShaderInfoLog(vertex, (GLsizei)sizeof(logbuf), NULL, logbuf);
+					Log_print("Cannot use OpenGL - error compiling GLSL 140 vertex shader: %s", logbuf);
+					exit(1);
+				}
+				fragment = gl.CreateShader(GL_FRAGMENT_SHADER);
+				GLchar *fsrc_ptr2 = fragmentShader;
+				gl.ShaderSource(fragment, 1, &fsrc_ptr2, NULL);
+				gl.CompileShader(fragment);
+				gl.GetShaderiv(fragment, GL_COMPILE_STATUS, &ok);
+				if (!ok) {
+					char logbuf[512]; gl.GetShaderInfoLog(fragment, (GLsizei)sizeof(logbuf), NULL, logbuf);
+					Log_print("Cannot use OpenGL - error compiling GLSL 140 fragment shader: %s", logbuf);
+					exit(1);
+				}
+				progID = gl.CreateProgram();
+				gl.AttachShader(progID, vertex);
+				gl.AttachShader(progID, fragment);
+				gl.LinkProgram(progID);
+				gl.GetProgramiv(progID, GL_LINK_STATUS, &success);
+				if (!success) {
+					char buf[500]; gl.GetProgramInfoLog(progID, 500, NULL, buf);
+					Log_print("Cannot use OpenGL - error linking GLSL 140 shader program: %s", buf);
+					exit(1);
+				}
+				Log_print("Shaders: using fallback GLSL 140 variant");
+				g_using_glsl_140 = 1;
+			} else {
+				Log_print("Shaders: using primary GLSL 410 variant");
+				g_using_glsl_140 = 0;
 			}
 
+			/* Clean up shader objects after link */
 			gl.DeleteShader(vertex);
 			gl.DeleteShader(fragment);
 			free(vertexShader);
 			free(fragmentShader);
+
+			/* Log active GLSL version */
+			{
+				const GLubyte *glsl_ver = gl.GetString ? gl.GetString(GL_SHADING_LANGUAGE_VERSION) : (const GLubyte*)"?";
+				if (glsl_ver)
+					Log_print("Active GLSL version: %s", (const char*)glsl_ver);
+			}
 
 			SDL_set_up_opengl();
 		}
@@ -1378,6 +1472,9 @@ int SDL_VIDEO_GL_Initialise(int *argc, char *argv[])
 				library_path = argv[++i];
 			else a_m = TRUE;
 		}
+			else if (strcmp(argv[i], "-skip-410") == 0) {
+				g_skip_glsl_410 = 1;
+			}
 		else {
 			if (strcmp(argv[i], "-help") == 0) {
 				help_only = TRUE;
@@ -1388,6 +1485,7 @@ int SDL_VIDEO_GL_Initialise(int *argc, char *argv[])
 				Log_print("\t-pbo                 Use OpenGL Pixel Buffer Objects if available");
 				Log_print("\t-no-pbo              Don't use OpenGL Pixel Buffer Objects");
 				Log_print("\t-opengl-lib <path>   Use a custom OpenGL shared library");
+				Log_print("\t-skip-410           Skip attempting GLSL 410 shaders (force 140 fallback)");
 			}
 			argv[j++] = argv[i];
 		}

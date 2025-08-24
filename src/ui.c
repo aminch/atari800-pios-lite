@@ -124,6 +124,10 @@ extern int op_filtering;
 extern float op_zoom;
 #endif /* RPI */
 
+#if SDL2
+extern int is_using_glsl_140(void);
+#endif 
+
 UI_tDriver *UI_driver = &UI_BASIC_driver;
 
 int UI_is_active = FALSE;
@@ -2930,19 +2934,25 @@ static void VideoModeSettings(void)
 			}
 			break;
 		case 20:
-			{
+			if (is_using_glsl_140()) {
+				UI_driver->fMessage("CRT beam shape option N/A in shader.", 1);
+			}
+			else {
 				int value = UI_driver->fSelectSlider("Adjust CRT beam shape",
-				                                     SDL_VIDEO_crt_beam_shape,
-				                                     20, &CrtBeamSliderLabel, NULL);
+												 SDL_VIDEO_crt_beam_shape,
+												 20, &CrtBeamSliderLabel, NULL);
 				if (value != -1)
 					SDL_VIDEO_CrtBeamShape(value);
 			}
 			break;
 		case 21:
-			{
+			if (is_using_glsl_140()) {
+				UI_driver->fMessage("CRT glow option N/A in shader.", 1);
+			}
+			else {
 				int value = UI_driver->fSelectSlider("Adjust CRT glow",
-				                                     SDL_VIDEO_crt_phosphor_glow,
-				                                     20, &CrtGlowSliderLabel, NULL);
+												 SDL_VIDEO_crt_phosphor_glow,
+												 20, &CrtGlowSliderLabel, NULL);
 				if (value != -1)
 					SDL_VIDEO_CrtPhosphorGlow(value);
 			}
